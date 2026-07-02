@@ -38,16 +38,20 @@ class CloudinaryService
         // Check if Cloudinary is configured
         if (env('CLOUDINARY_URL')) {
             try {
+                // Initialize Cloudinary SDK directly to avoid config caching issues in Laravel package
+                $cloudinary = new \Cloudinary\Cloudinary(env('CLOUDINARY_URL'));
+                
                 // Upload to Cloudinary
-                $uploadedFile = Cloudinary::upload($file->getRealPath(), [
+                $uploadApi = $cloudinary->uploadApi();
+                $uploadedFile = $uploadApi->upload($file->getRealPath(), [
                     'folder' => $folder,
                     'resource_type' => $resourceType,
                 ]);
 
                 return [
-                    'url' => $uploadedFile->getSecurePath(),
+                    'url' => $uploadedFile['secure_url'] ?? $uploadedFile['url'],
                     'provider' => 'cloudinary',
-                    'storageKey' => $uploadedFile->getPublicId(),
+                    'storageKey' => $uploadedFile['public_id'],
                     'folder' => $folder,
                     'resourceType' => $resourceType,
                     'originalName' => $originalName,
@@ -95,7 +99,9 @@ class CloudinaryService
         if ($provider === 'cloudinary') {
             if (env('CLOUDINARY_URL')) {
                 try {
-                    Cloudinary::destroy($storageKey, [
+                    $cloudinary = new \Cloudinary\Cloudinary(env('CLOUDINARY_URL'));
+                    $uploadApi = $cloudinary->uploadApi();
+                    $uploadApi->destroy($storageKey, [
                         'resource_type' => $resourceType,
                     ]);
                     return true;
@@ -112,5 +118,18 @@ class CloudinaryService
         }
 
         return false;
+    }
+
+    /**
+     * Alias of upload() - returns ['url', 'public_id'] for backward compat.
+     */
+    public function uploadFile(UploadedFile $file, string $folder = 'attachments'): array
+    {
+        $result = $this->upload($file, $folder);
+        return [
+            'url'       => $result['url'],
+            'public_id' => $result['storageKey'],
+            'provider'  => $result['provider'],
+        ];
     }
 }

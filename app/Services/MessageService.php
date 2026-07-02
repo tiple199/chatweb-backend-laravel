@@ -2,10 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\ClearedHistory;
+use App\Models\Message;
 use App\Repositories\MessageRepositoryInterface;
 use App\Repositories\ConversationRepositoryInterface;
-use App\Services\CloudinaryService;
-use App\Events\MessageSent;
 
 class MessageService
 {
@@ -18,153 +18,200 @@ class MessageService
         ConversationRepositoryInterface $conversationRepository,
         CloudinaryService $cloudinaryService
     ) {
-        $this->messageRepository = $messageRepository;
+        $this->messageRepository     = $messageRepository;
         $this->conversationRepository = $conversationRepository;
-        $this->cloudinaryService = $cloudinaryService;
+        $this->cloudinaryService     = $cloudinaryService;
     }
 
-    public function getHistory($conversationId, $page = 1, $limit = 50)
+    /**
+     * Lấy lịch sử tin nhắn, lọc theo cleared_at của user.
+     * Sort: mới nhất → reverse để hiển thị cũ nhất trước.
+     */
+    public function getHistory($conversationId, $userId, $page = 1, $limit = 30)
     {
-        return $this->messageRepository->getHistory($conversationId, $page, $limit);
-    }
+        // Tìm cleared_at của user này trong conversation
+        $cleared = ClearedHistory::where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->first();
 
-    public function searchMessages($keyword, $conversationId, $userId)
-    {
-        if ($conversationId) {
-            return $this->messageRepository->search($conversationId, $keyword, 'text');
+        $query = Message::where('conversation_id', $conversationId)
+            ->where('is_deleted_for_all', false);
+
+        if ($cleared) {
+            $query->where('created_at', '>', $cleared->cleared_at);
         }
 
-        // If no conversationId, search all conversations user is part of.
-        // Wait, the repository currently searches by conversation ID.
-        // To keep it simple, if no conversationId, we query the model directly for now.
-        // In a real scenario, we should add a method to MessageRepositoryInterface.
-        $query = \App\Models\Message::where('content', 'LIKE', "%{$keyword}%")
-            ->where('message_type', 'text')
-            ->whereHas('conversation.users', function($q) use ($userId) {
-                $q->where('users.id', $userId);
-            })
-            ->with(['sender', 'conversation'])
-            ->orderByDesc('created_at');
+        $total = $query->count();
+        $totalPages = max(1, ceil($total / $limit));
 
-        return $query->get()->all();
+        // Lấy page mới nhất, sau đó reverse để hiển thị ASC
+        $messages = $query
+            ->orderByDesc('created_at')
+            ->skip(($page - 1) * $limit)
+            ->take($limit)
+            ->with(['sender', 'readBy'])
+            ->get()
+            ->reverse()
+            ->values()
+            ->all();
+
+        return [
+            'messages'      => $messages,
+            'currentPage'   => $page,
+            'totalPages'    => $totalPages,
+            'totalMessages' => $total,
+        ];
+    }
+
+    public function searchMessages($keyword, $conversationId, $userId, $messageType = null)
+    {
+        $query = Message::where('is_deleted_for_all', false);
+
+        if (!empty($keyword)) {
+            $query->where('content', 'LIKE', "%{$keyword}%");
+        }
+
+        if ($messageType) {
+            $query->where('message_type', $messageType);
+        }
+
+        if ($conversationId) {
+            $query->where('conversation_id', $conversationId);
+        } else {
+            $query->whereHas('conversation.users', fn($q) => $q->where('users.id', $userId));
+        }
+
+        return $query->with(['sender', 'readBy'])->orderByDesc('created_at')->get()->all();
     }
 
     public function sendMessage($conversationId, $userId, $content, $messageType, $replyToMessageId, $file = null)
     {
-        $fileUrl = null;
-        $fileName = null;
-        $fileSize = null;
-        $mimeType = null;
+        $fileUrl      = null;
+        $fileProvider = null;
+        $filePublicId = null;
+        $fileName     = null;
+        $fileSize     = null;
+        $mimeType     = null;
 
         if ($file) {
-            $fileName = $file->getClientOriginalName();
-            $fileSize = $file->getSize();
-            $mimeType = $file->getMimeType();
+            $fileName     = $file->getClientOriginalName();
+            $fileSize     = $file->getSize();
+            $mimeType     = $file->getMimeType();
 
-            if (strpos($mimeType, 'image/') === 0) {
+            // Xác định loại message từ MIME
+            if (str_starts_with($mimeType, 'image/')) {
                 $messageType = 'image';
-            } elseif (strpos($mimeType, 'video/') === 0) {
+            } elseif (str_starts_with($mimeType, 'video/')) {
                 $messageType = 'video';
             } else {
                 $messageType = 'file';
             }
 
-            // Upload using CloudinaryService
-            $fileUrl = $this->cloudinaryService->uploadFile($file, 'chat_uploads');
+            $uploadResult = $this->cloudinaryService->uploadFile($file, 'attachments');
+            $fileUrl      = $uploadResult['url']       ?? null;
+            $filePublicId = $uploadResult['public_id'] ?? null;
+            $fileProvider = 'cloudinary';
+
             if (!$fileUrl) {
-                throw new \Exception("Lỗi upload file");
+                throw new \Exception('Lỗi upload file lên Cloudinary');
             }
         }
 
         $message = $this->messageRepository->create([
-            'sender_id' => $userId,
-            'conversation_id' => $conversationId,
-            'content' => $content,
-            'message_type' => $messageType,
-            'file_url' => $fileUrl,
-            'file_name' => $fileName,
-            'file_size' => $fileSize,
-            'mime_type' => $mimeType,
-            'reply_to_message_id' => $replyToMessageId,
+            'sender_id'          => $userId,
+            'conversation_id'    => $conversationId,
+            'content'            => $content,
+            'message_type'       => $messageType ?: 'text',
+            'file_url'           => $fileUrl,
+            'file_provider'      => $fileProvider,
+            'file_public_id'     => $filePublicId,
+            'file_name'          => $fileName,
+            'file_size'          => $fileSize,
+            'mime_type'          => $mimeType,
+            'reply_to_message_id'=> $replyToMessageId,
         ]);
 
-        // Update latest message in conversation
+        // Update latest_message_id
         $this->conversationRepository->update($conversationId, ['latest_message_id' => $message->id]);
 
-        $message->load(['sender', 'readBy', 'replyToMessage']);
+        return $message->load(['sender', 'readBy', 'conversation.users']);
+    }
 
-        return $message;
+    /**
+     * Tạo system message (không có sender_id thật – dùng null hoặc system user).
+     * Vì sender_id có FK constraint, ta dùng auth()->id() làm fallback hoặc bot user.
+     */
+    public function createSystemMessage($conversationId, $content)
+    {
+        $message = $this->messageRepository->create([
+            'sender_id'       => auth()->id(),
+            'conversation_id' => $conversationId,
+            'content'         => $content,
+            'message_type'    => 'system',
+        ]);
+
+        $this->conversationRepository->update($conversationId, ['latest_message_id' => $message->id]);
+
+        return $message->load(['sender', 'readBy', 'conversation.users']);
     }
 
     public function editMessage($messageId, $userId, $newContent)
     {
         $message = $this->messageRepository->findById($messageId);
-
-        if (!$message) {
-            throw new \Exception("Message not found", 404);
-        }
-
-        if ($message->sender_id !== $userId) {
-            throw new \Exception("Unauthorized to edit this message", 403);
-        }
-
-        if ($message->message_type !== 'text') {
-            throw new \Exception("Only text messages can be edited", 400);
-        }
+        if (!$message) throw new \Exception('Message not found', 404);
+        if ((int)$message->sender_id !== (int)$userId) throw new \Exception('Unauthorized', 403);
+        if ($message->message_type !== 'text') throw new \Exception('Chỉ có thể sửa tin nhắn text', 400);
+        if ($message->is_deleted_for_all) throw new \Exception('Tin nhắn đã bị thu hồi', 400);
 
         $this->messageRepository->update($messageId, ['content' => $newContent]);
-        
-        return $this->messageRepository->findById($messageId)->load(['sender', 'readBy', 'replyToMessage']);
+        return $this->messageRepository->findById($messageId)->load(['sender', 'readBy']);
     }
 
     public function recallMessage($messageId, $userId)
     {
         $message = $this->messageRepository->findById($messageId);
-
-        if (!$message) {
-            throw new \Exception("Message not found", 404);
-        }
-
-        if ($message->sender_id !== $userId) {
-            throw new \Exception("Unauthorized to recall this message", 403);
-        }
+        if (!$message) throw new \Exception('Message not found', 404);
+        if ((int)$message->sender_id !== (int)$userId) throw new \Exception('Unauthorized', 403);
 
         $this->messageRepository->update($messageId, [
             'is_deleted_for_all' => true,
-            'content' => 'Tin nhắn đã bị thu hồi'
+            'content'            => 'Tin nhắn đã bị thu hồi',
+            'deleted_at'         => now(),
         ]);
 
-        return $this->messageRepository->findById($messageId)->load(['sender', 'readBy', 'replyToMessage']);
+        return $this->messageRepository->findById($messageId)->load(['sender', 'readBy']);
     }
 
-    public function formatMessage($msg) {
+    public function formatMessage($msg)
+    {
+        $sender = $msg->sender ? [
+            '_id'      => (string) $msg->sender->id,
+            'fullName' => $msg->sender->full_name,
+            'avatar'   => $msg->sender->avatar,
+        ] : null;
+
+        $readBy = $msg->readBy ? $msg->readBy->map(fn($u) => [
+            '_id'      => (string) $u->id,
+            'fullName' => $u->full_name,
+            'avatar'   => $u->avatar,
+        ])->toArray() : [];
+
         return [
-            '_id' => (string) $msg->id,
-            'id' => $msg->id,
-            'sender' => [
-                '_id' => (string) $msg->sender->id,
-                'fullName' => $msg->sender->full_name,
-                'avatar' => $msg->sender->avatar,
-            ],
-            'content' => $msg->content,
-            'conversationId' => (string) $msg->conversation_id,
-            'messageType' => $msg->message_type,
-            'fileUrl' => $msg->file_url,
-            'fileName' => $msg->file_name,
-            'fileSize' => $msg->file_size,
-            'mimeType' => $msg->mime_type,
-            'isDeletedBySender' => $msg->is_deleted_by_sender,
-            'isDeletedForAll' => $msg->is_deleted_for_all,
-            'replyToMessageId' => $msg->reply_to_message_id ? (string) $msg->reply_to_message_id : null,
-            'readBy' => $msg->readBy->map(function($u) {
-                return [
-                    '_id' => (string) $u->id,
-                    'fullName' => $u->full_name,
-                    'avatar' => $u->avatar
-                ];
-            })->toArray(),
-            'createdAt' => $msg->created_at,
-            'updatedAt' => $msg->updated_at,
+            '_id'               => (string) $msg->id,
+            'id'                => $msg->id,
+            'conversationId'    => (string) $msg->conversation_id,
+            'sender'            => $sender,
+            'content'           => $msg->content,
+            'messageType'       => $msg->message_type,
+            'fileUrl'           => $msg->file_url,
+            'fileName'          => $msg->file_name,
+            'fileSize'          => $msg->file_size,
+            'mimeType'          => $msg->mime_type,
+            'isDeletedForAll'   => $msg->is_deleted_for_all,
+            'replyToMessageId'  => $msg->reply_to_message_id ? (string) $msg->reply_to_message_id : null,
+            'readBy'            => $readBy,
+            'createdAt'         => $msg->created_at,
+            'updatedAt'         => $msg->updated_at,
         ];
     }
 }

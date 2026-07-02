@@ -33,18 +33,16 @@ class FriendService
     public function sendRequest($userId, $userName, $recipientId)
     {
         if ($userId == $recipientId) {
-            throw new \Exception("Không thể kết bạn với chính mình");
+            throw new \Exception('Không thể kết bạn với chính mình');
         }
 
         $status = $this->friendRepository->getFriendshipStatus($userId, $recipientId);
-
         if ($status !== 'none') {
-            throw new \Exception("Yêu cầu đã tồn tại hoặc đã là bạn bè");
+            throw new \Exception('Yêu cầu đã tồn tại hoặc đã là bạn bè');
         }
 
         $friend = $this->friendRepository->create($userId, $recipientId);
 
-        // Broadcast Realtime FriendRequestSent event
         broadcast(new FriendRequestSent($userId, $userName, $recipientId))->toOthers();
 
         return $friend;
@@ -55,13 +53,18 @@ class FriendService
         $friend = $this->friendRepository->findById($requestId);
 
         if (!$friend || $friend->recipient_id !== $userId) {
-            throw new \Exception("Không tìm thấy yêu cầu");
+            throw new \Exception('Không tìm thấy yêu cầu');
         }
 
         $friend->update(['status' => 'accepted']);
 
-        // Broadcast Realtime FriendRequestAccepted event
         $requesterId = $friend->requester_id;
+
+        // Tự động tạo conversation 1-1 nếu chưa có
+        $convService = app(\App\Services\ConversationService::class);
+        $convService->accessDirectChat($userId, $requesterId);
+
+        // Broadcast event
         broadcast(new FriendRequestAccepted($userId, $userName, $requesterId))->toOthers();
 
         return true;
@@ -70,7 +73,6 @@ class FriendService
     public function declineRequest($userId, $requestId)
     {
         $friend = $this->friendRepository->findById($requestId);
-        
         if ($friend && $friend->recipient_id === $userId) {
             $friend->delete();
             return true;

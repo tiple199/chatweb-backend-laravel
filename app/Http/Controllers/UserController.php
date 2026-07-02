@@ -14,54 +14,49 @@ class UserController extends Controller
         $this->userService = $userService;
     }
 
+    // GET /users/profile
     public function profile(Request $request)
     {
         $user = auth()->user();
         return response()->json([
             'success' => true,
-            'user' => $this->formatUser($user)
+            'data' => $this->formatUser($user)
         ]);
     }
 
-    public function search(Request $request)
+    // GET /users/:id
+    public function getUserById($id)
     {
-        $keyword = $request->query('query', '');
-        
-        $users = $this->userService->searchUsers($keyword, auth()->id());
-
-        // Transform array of users to formatted array
-        $formattedUsers = array_map(function($user) {
-            return $this->formatUser($user);
-        }, $users);
-
+        $user = \App\Models\User::find($id);
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'User không tồn tại'], 404);
+        }
         return response()->json([
             'success' => true,
-            'data' => [
-                'users' => $formattedUsers
-            ]
+            'data' => $this->formatUser($user)
         ]);
     }
 
+    // PUT /users/avatar – Upload avatar (field: file, max 10MB)
     public function uploadAvatar(Request $request)
     {
         $request->validate([
-            'avatar' => 'required|image|mimes:jpeg,png,jpg,gif|max:5120',
+            'file' => 'required|file|mimes:jpeg,png,jpg,gif,webp|max:10240',
         ]);
 
         try {
             $user = auth()->user();
-            
-            $user = $this->userService->updateAvatar($user, $request->file('avatar'));
+            $user = $this->userService->updateAvatar($user, $request->file('file'));
 
-            // The update Avatar might return boolean if updated via repository, so let's refetch if needed.
-            // Actually our service returns boolean for update right now, wait let me check UserService! 
-            // The service returns the boolean update result, so we should fetch the user again.
-            $user = auth()->user()->fresh();
+            // Refresh from DB to get updated avatar URL
+            if (!is_object($user) || !isset($user->id)) {
+                $user = auth()->user()->fresh();
+            }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Cập nhật avatar thành công',
-                'user' => $this->formatUser($user)
+                'data'    => $this->formatUser($user)
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -71,14 +66,14 @@ class UserController extends Controller
         }
     }
 
-    private function formatUser($user) {
+    private function formatUser($user)
+    {
         return [
-            '_id' => (string) $user->id,
-            'id' => $user->id,
-            'fullName' => $user->full_name,
-            'email' => $user->email,
-            'avatar' => $user->avatar,
-            'isVerified' => $user->is_verified,
+            '_id'       => (string) $user->id,
+            'id'        => $user->id,
+            'fullName'  => $user->full_name,
+            'email'     => $user->email,
+            'avatar'    => $user->avatar,
             'createdAt' => $user->created_at,
             'updatedAt' => $user->updated_at,
         ];

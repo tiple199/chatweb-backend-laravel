@@ -42,6 +42,14 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Register Pipeline handlers
+        $this->app->singleton(\App\Pipeline\ConversationPermissionHandler::class);
+        $this->app->singleton(\App\Pipeline\ContentValidationHandler::class);
+        $this->app->singleton(\App\Pipeline\MessagePipeline::class, function ($app) {
+            return new \App\Pipeline\MessagePipeline(
+                $app->make(\App\Pipeline\ConversationPermissionHandler::class),
+                $app->make(\App\Pipeline\ContentValidationHandler::class)
+            );
+        });
     }
 }
