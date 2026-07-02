@@ -32,8 +32,9 @@ class UserService
         $folder = 'avatars';
         $publicId = 'avatar-' . $user->id . '-' . time();
         
-        $uploadedFileUrl = $this->cloudinaryService->uploadImage($file, $folder, $publicId);
-
+        $result = $this->cloudinaryService->upload($file, $folder, 'image');
+        $uploadedFileUrl = $result['url'] ?? null;
+        
         if (!$uploadedFileUrl) {
             throw new \Exception("Upload failed");
         }
