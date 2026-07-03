@@ -23,6 +23,7 @@ return new class extends Migration
             $table->string('chat_name')->nullable();
             $table->boolean('is_group_chat')->default(false);
             $table->unsignedBigInteger('latest_message_id')->nullable();
+            $table->foreignId('creator_id')->nullable()->constrained('users')->onDelete('set null');
             $table->timestamps();
         });
 
@@ -41,7 +42,7 @@ return new class extends Migration
             $table->foreignId('sender_id')->constrained('users')->onDelete('cascade');
             $table->foreignId('conversation_id')->constrained('conversations')->onDelete('cascade');
             $table->text('content')->nullable();
-            $table->enum('message_type', ['text', 'image', 'video', 'file', 'system', 'poll'])->default('text');
+            $table->enum('message_type', ['text', 'image', 'video', 'file', 'system', 'poll', 'note'])->default('text');
             $table->string('file_url')->nullable();
             $table->string('file_provider')->default('local');
             $table->string('file_public_id')->nullable();

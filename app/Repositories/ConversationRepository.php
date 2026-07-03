@@ -59,6 +59,7 @@ class ConversationRepository implements ConversationRepositoryInterface
             $conversation = Conversation::create([
                 'chat_name' => $chatName,
                 'is_group_chat' => true,
+                'creator_id' => $creatorId,
             ]);
 
             // Ensure unique members list

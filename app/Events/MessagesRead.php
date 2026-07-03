@@ -10,38 +10,37 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class FriendRequestSent implements ShouldBroadcastNow
+class MessagesRead implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public $senderId;
-    public $senderName;
-    public $recipientId;
+    public $conversationId;
+    public $userId;
 
     /**
      * Create a new event instance.
      */
-    public function __construct($senderId, $senderName, $recipientId)
+    public function __construct($conversationId, $userId)
     {
-        $this->senderId = $senderId;
-        $this->senderName = $senderName;
-        $this->recipientId = $recipientId;
+        $this->conversationId = $conversationId;
+        $this->userId = $userId;
     }
 
     /**
      * Get the channels the event should broadcast on.
-     *
-     * @return array<int, \Illuminate\Broadcasting\Channel>
      */
     public function broadcastOn(): array
     {
         return [
-            new PrivateChannel('user.' . $this->recipientId),
+            new PrivateChannel('chat.' . $this->conversationId),
         ];
     }
 
+    /**
+     * The event's broadcast name.
+     */
     public function broadcastAs()
     {
-        return 'friend-request';
+        return 'messages.read';
     }
 }

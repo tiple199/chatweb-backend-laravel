@@ -64,6 +64,16 @@ class ConversationController extends Controller
                 auth()->id()
             );
 
+            // Broadcast GroupAdded to all participants
+            $currentUser = auth()->user();
+            foreach ($request->users as $userId) {
+                broadcast(new \App\Events\GroupAdded(
+                    $userId,
+                    "Bạn đã được thêm vào nhóm " . $groupChat->chat_name . " bởi " . $currentUser->full_name,
+                    $groupChat->id
+                ));
+            }
+
             return response()->json([
                 'success' => true,
                 'data' => $this->formatConversation($groupChat, auth()->id())
@@ -98,7 +108,27 @@ class ConversationController extends Controller
     public function leaveGroup($conversationId)
     {
         try {
-            $this->conversationService->leaveGroup($conversationId, auth()->id());
+            $conversation = \App\Models\Conversation::find($conversationId);
+            if (!$conversation) {
+                return response()->json(['success' => false, 'message' => 'Nhóm không tồn tại'], 404);
+            }
+
+            $userId = auth()->id();
+            $isCreator = (int)$conversation->creator_id === (int)$userId;
+
+            if ($isCreator) {
+                // Phát event cho tất cả thành viên trong nhóm biết nhóm đã bị giải tán
+                broadcast(new \App\Events\ParticipantsUpdated((string)$conversationId, (string)$userId, 'disband'))->toOthers();
+                
+                // Giải tán nhóm - Xóa latest_message_id để tránh ràng buộc khóa ngoại vòng lặp
+                $conversation->update(['latest_message_id' => null]);
+                $conversation->delete();
+
+                return response()->json(['success' => true, 'message' => 'Chủ nhóm rời nhóm. Đã giải tán nhóm thành công']);
+            }
+
+            // Normal leaving logic
+            $this->conversationService->leaveGroup($conversationId, $userId);
 
             // System message
             $msg = $this->messageService->createSystemMessage(
@@ -107,6 +137,9 @@ class ConversationController extends Controller
             );
             $fmtMsg = $this->messageService->formatMessage($msg);
             broadcast(new MessageSent($fmtMsg));
+
+            // Notify participants updated
+            broadcast(new \App\Events\ParticipantsUpdated((string)$conversationId, (string)$userId, 'leave'))->toOthers();
 
             // Nếu nhóm còn dưới 3 người
             $conversation = \App\Models\Conversation::find($conversationId);
@@ -136,14 +169,22 @@ class ConversationController extends Controller
     public function getParticipants($conversationId)
     {
         $users = $this->conversationService->getParticipants($conversationId);
+        $conversation = \App\Models\Conversation::find($conversationId);
 
-        $formatted = collect($users)->map(function ($user) {
+        $formatted = collect($users)->map(function ($user) use ($conversation) {
+            $role = 'member';
+            if ($conversation && (string) $user->id === (string) $conversation->creator_id) {
+                $role = 'creator';
+            } elseif ($user->pivot->is_admin) {
+                $role = 'admin';
+            }
+
             return [
                 'userId'   => (string) $user->id,
                 'fullName' => $user->full_name,
                 'email'    => $user->email,
                 'avatar'   => $user->avatar,
-                'role'     => $user->pivot->is_admin ? 'admin' : 'member',
+                'role'     => $role,
             ];
         });
 
@@ -166,6 +207,9 @@ class ConversationController extends Controller
 
         $addedUser = $this->conversationService->addMember($conversationId, $request->userId);
 
+        $conversation = \App\Models\Conversation::find($conversationId);
+        $chatName = $conversation ? $conversation->chat_name : 'nhóm';
+
         // System message
         $addedUserObj = \App\Models\User::find($request->userId);
         if ($addedUserObj) {
@@ -176,6 +220,13 @@ class ConversationController extends Controller
             $fmtMsg = $this->messageService->formatMessage($msg);
             broadcast(new MessageSent($fmtMsg));
         }
+
+        // Broadcast GroupAdded to the added user
+        broadcast(new \App\Events\GroupAdded(
+            $request->userId,
+            "Bạn đã được thêm vào nhóm " . $chatName . " bởi " . $currentUser->full_name,
+            $conversationId
+        ));
 
         // Broadcast participants_updated
         broadcast(new ParticipantsUpdated($conversationId, $request->userId, 'add'))->toOthers();
@@ -188,9 +239,41 @@ class ConversationController extends Controller
     {
         $currentUser = auth()->user();
 
-        // Check admin permission
-        if (!$this->conversationService->isAdmin($conversationId, $currentUser->id)) {
-            return response()->json(['success' => false, 'message' => 'Bạn không có quyền xóa thành viên'], 403);
+        $conversation = \App\Models\Conversation::find($conversationId);
+        if (!$conversation) {
+            return response()->json(['success' => false, 'message' => 'Nhóm không tồn tại'], 404);
+        }
+
+        // Get rank of current user
+        $currentPivot = $conversation->users()->where('users.id', $currentUser->id)->first()?->pivot;
+        if (!$currentPivot) {
+            return response()->json(['success' => false, 'message' => 'Bạn không phải là thành viên nhóm'], 403);
+        }
+        $currentUserRank = 1;
+        if ((int)$conversation->creator_id === (int)$currentUser->id) {
+            $currentUserRank = 3;
+        } elseif ($currentPivot->is_admin) {
+            $currentUserRank = 2;
+        }
+
+        // Get rank of target user
+        $targetPivot = $conversation->users()->where('users.id', $userId)->first()?->pivot;
+        if (!$targetPivot) {
+            return response()->json(['success' => false, 'message' => 'Thành viên không tồn tại trong nhóm'], 404);
+        }
+        $targetUserRank = 1;
+        if ((int)$conversation->creator_id === (int)$userId) {
+            $targetUserRank = 3;
+        } elseif ($targetPivot->is_admin) {
+            $targetUserRank = 2;
+        }
+
+        // Hierarchy rule: Rank of current user must be strictly greater than rank of target user
+        if ($currentUserRank <= $targetUserRank) {
+            return response()->json([
+                'success' => false, 
+                'message' => 'Bạn không đủ quyền để xóa thành viên này'
+            ], 403);
         }
 
         $removedUserObj = \App\Models\User::find($userId);
@@ -227,13 +310,14 @@ class ConversationController extends Controller
     {
         $currentUser = auth()->user();
         try {
-            $this->conversationService->grantAdmin($conversationId, $currentUser->id, $userId);
+            $newAdminState = $this->conversationService->grantAdmin($conversationId, $currentUser->id, $userId);
             
             $targetUser = \App\Models\User::find($userId);
             if ($targetUser) {
+                $actionText = $newAdminState ? 'cấp quyền quản trị cho' : 'gỡ quyền quản trị của';
                 $msg = $this->messageService->createSystemMessage(
                     $conversationId,
-                    $currentUser->full_name . ' đã cấp quyền quản trị cho ' . $targetUser->full_name
+                    $currentUser->full_name . " đã $actionText " . $targetUser->full_name
                 );
                 $fmtMsg = $this->messageService->formatMessage($msg);
                 broadcast(new MessageSent($fmtMsg));
@@ -241,7 +325,8 @@ class ConversationController extends Controller
 
             broadcast(new ParticipantsUpdated($conversationId, $userId, 'update_role'))->toOthers();
 
-            return response()->json(['success' => true, 'message' => 'Đã cấp quyền quản trị']);
+            $msgText = $newAdminState ? 'Đã cấp quyền quản trị' : 'Đã gỡ quyền quản trị';
+            return response()->json(['success' => true, 'message' => $msgText]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 403);
         }
@@ -341,6 +426,8 @@ class ConversationController extends Controller
                 'ConversationId'  => (string) $note->conversation_id,
                 'Content'         => $note->content,
                 'CreatedByUserId' => (string) $note->created_by,
+                'CreatorName'     => $note->creator ? $note->creator->full_name : null,
+                'CreatorAvatar'   => $note->creator ? $note->creator->avatar : null,
                 'CreatedAt'       => $note->created_at,
                 'UpdatedAt'       => $note->updated_at,
             ];
@@ -369,6 +456,8 @@ class ConversationController extends Controller
                 'ConversationId'  => (string) $note->conversation_id,
                 'Content'         => $note->content,
                 'CreatedByUserId' => (string) $note->created_by,
+                'CreatorName'     => auth()->user()->full_name,
+                'CreatorAvatar'   => auth()->user()->avatar,
                 'CreatedAt'       => $note->created_at,
                 'UpdatedAt'       => $note->updated_at,
             ]
@@ -480,6 +569,7 @@ class ConversationController extends Controller
             'latestMessage'   => $latestMessage,
             'otherUserId'     => $otherUserId,
             'otherUserAvatar' => $otherUserAvatar,
+            'creatorId'       => $conv->creator_id ? (string) $conv->creator_id : null,
             'createdAt'       => $conv->created_at,
             'updatedAt'       => $conv->updated_at,
         ];

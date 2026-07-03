@@ -120,15 +120,20 @@ class ConversationService
 
     public function grantAdmin($conversationId, $adminId, $targetUserId)
     {
-        if (!$this->isAdmin($conversationId, $adminId)) {
-            throw new \Exception('Bạn không có quyền cấp quyền quản trị');
-        }
-        
         $conversation = $this->conversationRepository->findById($conversationId);
         if (!$conversation) throw new \Exception('Conversation không tồn tại');
-        
-        $conversation->users()->updateExistingPivot($targetUserId, ['is_admin' => true]);
-        return true;
+
+        // Only the creator can grant/revoke admin rights
+        if ((int)$conversation->creator_id !== (int)$adminId) {
+            throw new \Exception('Chỉ trưởng nhóm (ADMIN) mới có quyền cấp/gỡ quyền quản trị');
+        }
+
+        // Toggle admin status
+        $pivot = $conversation->users()->where('users.id', $targetUserId)->first()?->pivot;
+        $newAdminState = !$pivot?->is_admin;
+
+        $conversation->users()->updateExistingPivot($targetUserId, ['is_admin' => $newAdminState]);
+        return $newAdminState;
     }
 
     public function markAsRead($conversationId, $userId)
@@ -144,6 +149,9 @@ class ConversationService
         foreach ($unreadMessages as $message) {
             $message->readBy()->syncWithoutDetaching([$userId]);
         }
+
+        // Broadcast messages.read event to notify other users
+        broadcast(new \App\Events\MessagesRead($conversationId, $userId));
 
         return true;
     }

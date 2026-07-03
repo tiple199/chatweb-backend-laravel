@@ -43,7 +43,7 @@ class FriendService
 
         $friend = $this->friendRepository->create($userId, $recipientId);
 
-        broadcast(new FriendRequestSent($userId, $userName, $recipientId))->toOthers();
+        broadcast(new FriendRequestSent($userId, $userName, $recipientId));
 
         return $friend;
     }
@@ -65,7 +65,7 @@ class FriendService
         $convService->accessDirectChat($userId, $requesterId);
 
         // Broadcast event
-        broadcast(new FriendRequestAccepted($userId, $userName, $requesterId))->toOthers();
+        broadcast(new FriendRequestAccepted($userId, $userName, $requesterId));
 
         return true;
     }

@@ -6,34 +6,36 @@ use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PresenceChannel;
 use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MessageUpdated implements ShouldBroadcast
+class GroupAdded implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
+    public $userId;
     public $message;
+    public $conversationId;
 
     /**
      * Create a new event instance.
-     *
-     * @return void
      */
-    public function __construct($message)
+    public function __construct($userId, $message, $conversationId)
     {
+        $this->userId = $userId;
         $this->message = $message;
+        $this->conversationId = $conversationId;
     }
 
     /**
      * Get the channels the event should broadcast on.
-     *
-     * @return \Illuminate\Broadcasting\Channel|array
      */
-    public function broadcastOn()
+    public function broadcastOn(): array
     {
-        return new PrivateChannel('chat.' . $this->message['conversationId']);
+        return [
+            new PrivateChannel('user.' . $this->userId),
+        ];
     }
 
     /**
@@ -41,18 +43,6 @@ class MessageUpdated implements ShouldBroadcast
      */
     public function broadcastAs(): string
     {
-        return 'message.updated';
-    }
-
-    /**
-     * Get the data to broadcast.
-     *
-     * @return array
-     */
-    public function broadcastWith(): array
-    {
-        return [
-            'message' => $this->message,
-        ];
+        return 'group-added';
     }
 }

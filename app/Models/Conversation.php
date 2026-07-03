@@ -13,6 +13,7 @@ class Conversation extends Model
         'chat_name',
         'is_group_chat',
         'latest_message_id',
+        'creator_id',
     ];
 
     protected $casts = [
