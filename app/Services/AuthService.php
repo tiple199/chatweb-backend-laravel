@@ -121,14 +121,14 @@ class AuthService
             throw new Exception("Email not found.", 404);
         }
 
-        $token = Str::random(64);
+        $otp = (string) rand(100000, 999999);
         $time = env('RATE_LIMIT_FORGOT_PASSWORD', 15); // Default 15 mins
 
-        $this->handleRateLimit($email, $token, $time, 'RESET_PASSWORD');
+        $this->handleRateLimit($email, $otp, $time, 'RESET_PASSWORD');
 
-        Mail::to($email)->send(new ResetPasswordMail($token));
+        Mail::to($email)->send(new SendOtpMail($otp));
 
-        return ['message' => 'Reset password email sent successfully'];
+        return ['message' => 'OTP sent successfully'];
     }
 
     public function resetPassword(string $token, string $password)
