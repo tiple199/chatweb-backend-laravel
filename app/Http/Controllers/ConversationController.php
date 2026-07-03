@@ -558,6 +558,21 @@ class ConversationController extends Controller
             }
         }
 
+        // Unread messages count calculation
+        $cleared = \App\Models\ClearedHistory::where('conversation_id', $conv->id)
+            ->where('user_id', $uid)
+            ->first();
+
+        $unreadQuery = $conv->messages()
+            ->where('sender_id', '!=', $uid)
+            ->whereDoesntHave('readBy', fn($q) => $q->where('user_id', $uid));
+
+        if ($cleared) {
+            $unreadQuery->where('created_at', '>', $cleared->cleared_at);
+        }
+
+        $unreadCount = $unreadQuery->count();
+
         return [
             '_id'             => (string) $conv->id,
             'id'              => $conv->id,
@@ -570,6 +585,7 @@ class ConversationController extends Controller
             'otherUserId'     => $otherUserId,
             'otherUserAvatar' => $otherUserAvatar,
             'creatorId'       => $conv->creator_id ? (string) $conv->creator_id : null,
+            'unreadCount'     => $unreadCount,
             'createdAt'       => $conv->created_at,
             'updatedAt'       => $conv->updated_at,
         ];
